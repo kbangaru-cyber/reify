@@ -1,0 +1,36 @@
+# checkpoints and weights
+*.pt
+*.pth
+*.ckpt
+
+# data and caches
+*.npy
+*.npz
+*.ply
+*.las
+*.laz
+*.e57
+data/
+datasets/
+cache/
+*_cache/
+
+# notebooks: strip outputs before committing
+.ipynb_checkpoints/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# local config with machine-specific paths
+.env
+configs/local.yaml
+
+# os / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
