@@ -1,4 +1,6 @@
-# buildseg
+# Reify
+
+*reify*: to turn something abstract into a concrete thing. A scan is a few hundred million anonymous measurements. The output is a countable set of named building components.
 
 Staged point cloud segmentation for building components.
 
