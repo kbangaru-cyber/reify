@@ -140,3 +140,29 @@ were used. A number over 20 scenes that is honestly labelled beats a number over
 
 **First epoch is extremely slow** — that is the cache filling. Watch
 `/content/reify_cache` grow. Raising `REIFY_DATA__NUM_WORKERS` helps most here.
+
+## Staging the data locally
+
+Google Drive is a network filesystem. Every file open is a round trip, so
+anything that touches thousands of small files is slow there: 1513 PLY headers
+takes minutes, and the first training epoch is worse because it parses all of
+them.
+
+Copy the dataset onto local Colab disk once per session, as a single streamed
+archive rather than thousands of separate reads:
+
+```bash
+!mkdir -p /content/scannet
+!tar -C "$REIFY_DATA__ROOT" -cf - scans metadata | tar -C /content/scannet -xf -
+```
+
+```python
+os.environ["REIFY_DATA__ROOT"] = "/content/scannet"
+```
+
+Do this on a cheap runtime. It is entirely I/O bound, so a GPU sits idle
+throughout, and staging on an A100 wastes compute units at several times the
+rate. Switch to the A100 once the data is local and the cache is warm.
+
+The same reasoning applies to `data.cache_dir`. Keeping it on `/content` is much
+faster than Drive, at the cost of rebuilding it each session.
