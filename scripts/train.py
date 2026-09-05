@@ -47,6 +47,7 @@ def main() -> None:
         use_normals=cfg.data.use_normals,
         cache_dir=cfg.data.cache_dir,
         seed=cfg.data.seed,
+        verify=cfg.data.verify,
     )
     loader = DataLoader(
         dataset,

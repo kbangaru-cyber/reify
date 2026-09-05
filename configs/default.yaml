@@ -17,6 +17,10 @@ data:
   use_normals: true
   num_workers: 2
   seed: 0
+  # Check every scene's files exist before training. Turn this off when the
+  # cache is already built and scans/ is not present locally, which also
+  # avoids stat-ing thousands of files over a network mount.
+  verify: true
 
 model:
   num_classes: 20

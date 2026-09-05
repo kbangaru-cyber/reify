@@ -64,6 +64,7 @@ def main() -> None:
         use_normals=use_normals,
         cache_dir=cfg.data.cache_dir,
         seed=cfg.data.seed,
+        verify=cfg.data.verify,
         return_points=True,
     )
     if limit:
