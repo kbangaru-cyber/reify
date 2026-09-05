@@ -120,7 +120,8 @@ def main() -> None:
         scaler.update()
 
         for k in keys:
-            meters[k].append(float(stats[k] if k == "loss" else stats[k]))
+            # loss still carries grad; the rest are already detached
+            meters[k].append(float(stats[k].detach()))
 
         if step % cfg.train.log_every == 0:
             dt = (time.time() - t0) / cfg.train.log_every
