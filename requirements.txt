@@ -1,0 +1,14 @@
+# Install torch separately, matched to your CUDA runtime. Verified combination:
+#   torch==2.9.0+cu126   (Colab L4, Python 3.12)
+# On Colab, torch is preinstalled. Do not reinstall it unless the version is wrong.
+
+numpy>=1.26
+pandas>=2.0
+plyfile>=1.0
+pyyaml>=6.0
+tqdm>=4.66
+
+# Optional, only needed if you enable a sparse convolution backbone.
+# Neither installs cleanly on every CUDA build. See docs/backbones.md.
+# spconv-cu120
+# torchsparse

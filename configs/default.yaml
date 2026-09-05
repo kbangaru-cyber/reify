@@ -1,0 +1,55 @@
+# Every path lives here. Nothing below src/ contains an absolute path.
+# Any value can be overridden from the environment, uppercased and prefixed
+# with REIFY_ and joined by double underscore. For example:
+#   REIFY_DATA__ROOT=/content/drive/MyDrive/... python scripts/train.py
+
+data:
+  # Directory containing scans/ and metadata/
+  root: /content/drive/MyDrive/Thesis/Datasets/Point_cloud_segmentation_data/scannetv2_raw
+  # Preprocessed scene cache. Local disk is much faster than Drive.
+  cache_dir: /content/reify_cache
+  voxel_size: 0.02
+  # Training caps. Set both to 0 to disable, which is required for honest evaluation.
+  max_points: 200000
+  max_superpoints: 4096
+  # Read the mesh faces and append per-vertex normals to the features.
+  # False reproduces the original 6-dim xyz+rgb features.
+  use_normals: true
+  num_workers: 2
+  seed: 0
+
+model:
+  num_classes: 20
+  d_model: 128
+  nhead: 8
+  num_decoder_layers: 6
+  k_ins: 256
+  query_aug_std: 0.02
+  # one of: auto, mlp, spconv, minkowski
+  # auto picks the best available and prints what it chose.
+  # naming one explicitly makes a failed import a hard error instead of a silent downgrade.
+  backbone: auto
+
+train:
+  batch_size: 2
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  steps: 6000
+  log_every: 20
+  save_every: 500
+  out_dir: /content/drive/MyDrive/Thesis/Playground/Point_cloud_segmentation/reify_ckpts
+  grad_clip: 0.0
+  amp: true
+
+eval:
+  split: val
+  # Cap the number of scenes for a quick check. 0 means the whole split.
+  limit: 0
+  # Score at the level of the original points, not superpoints.
+  # This is what makes the number comparable to published mIoU.
+  point_level: true
+  # Minimum mask probability for a superpoint to join a predicted instance.
+  mask_threshold: 0.5
+  # Discard predicted instances below this combined score.
+  score_threshold: 0.25
+  results_path: results.md
