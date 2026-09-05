@@ -59,7 +59,7 @@ def show_scene(
     from plotly.subplots import make_subplots
 
     from reify.data.scannet import ScanNetDataset, collate
-    from reify.eval.inference import panoptic_from_outputs
+    from reify.eval.inference import instances_from_outputs, panoptic_from_outputs
     from reify.models import OneFormer3DLike
 
     cfg = load_config(config, verbose=False)
@@ -67,6 +67,8 @@ def show_scene(
     state = torch.load(ckpt, map_location=device)
     use_normals = bool(state.get("use_normals", cfg.data.use_normals))
     backbone = state.get("backbone", cfg.model.backbone)
+    class_agnostic = bool(state.get("class_agnostic", cfg.model.class_agnostic))
+    aux_semantic = bool(state.get("aux_semantic", cfg.model.aux_semantic))
 
     # Same settings the training cache was built with, so this is a cache hit.
     dataset = ScanNetDataset(
@@ -98,19 +100,31 @@ def show_scene(
         k_ins=cfg.model.k_ins,
         query_aug_std=0.0,
         backbone=backbone,
+        class_agnostic=class_agnostic,
+        aux_semantic=aux_semantic,
     ).to(device)
     model.load_state_dict(state["model"])
     model.eval()
 
     with torch.no_grad():
         out = model(tensors)
-        sp_sem_pred, sp_inst_pred = panoptic_from_outputs(
-            out,
-            tensors["sp_mask"],
-            num_classes=cfg.model.num_classes,
-            mask_threshold=cfg.eval.mask_threshold,
-            score_threshold=cfg.eval.score_threshold,
-        )
+        if class_agnostic:
+            sp_inst_pred, _ = instances_from_outputs(
+                out, tensors["sp_mask"],
+                mask_threshold=cfg.eval.mask_threshold,
+                score_threshold=cfg.eval.score_threshold,
+            )
+            if out["sem_mask_logits"] is not None:
+                sp_sem_pred = out["sem_mask_logits"][0].argmax(dim=0)
+            else:
+                sp_sem_pred = torch.full_like(sp_inst_pred, -1)
+        else:
+            sp_sem_pred, sp_inst_pred = panoptic_from_outputs(
+                out, tensors["sp_mask"],
+                num_classes=cfg.model.num_classes,
+                mask_threshold=cfg.eval.mask_threshold,
+                score_threshold=cfg.eval.score_threshold,
+            )
 
     # Voxel geometry, and superpoint labels broadcast onto the voxels that own them.
     feats = batch["feats"].numpy()
@@ -129,9 +143,12 @@ def show_scene(
 
     panels = [
         ("Input colour", _to_hex(rgb[keep])),
-        ("Ground truth semantics", _to_hex(semantic_colors(gt_sem[keep]))),
-        ("Predicted semantics", _to_hex(semantic_colors(pred_sem[keep]))),
+        ("Ground truth instances", _to_hex(instance_colors(gt_inst[keep]))),
         ("Predicted instances", _to_hex(instance_colors(pred_inst[keep]))),
+        (
+            "Predicted semantics" if (pred_sem >= 0).any() else "Ground truth semantics",
+            _to_hex(semantic_colors(pred_sem[keep] if (pred_sem >= 0).any() else gt_sem[keep])),
+        ),
     ]
     hover = np.array([
         f"gt: {_name(g)}<br>pred: {_name(p)}<br>instance: {i}"

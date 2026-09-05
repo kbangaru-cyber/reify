@@ -29,6 +29,13 @@ model:
   num_decoder_layers: 6
   k_ins: 256
   query_aug_std: 0.02
+  # Class-agnostic mode: the instance head predicts object vs no-object only.
+  # Grouping then works on any object regardless of type, including instances
+  # whose semantic label is unknown, which the class-aware path throws away.
+  class_agnostic: false
+  # Keep the semantic branch as an auxiliary task while class_agnostic is on.
+  # Set false to train on data that has instance masks but no class labels.
+  aux_semantic: true
   # one of: auto, mlp, spconv, minkowski
   # auto picks the best available and prints what it chose.
   # naming one explicitly makes a failed import a hard error instead of a silent downgrade.

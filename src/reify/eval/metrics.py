@@ -172,3 +172,122 @@ class PanopticMeter:
             f"| **mean** | **{s['PQ']:.1f}** | **{s['SQ']:.1f}** | **{s['RQ']:.1f}** | | | |"
         )
         return "\n".join(lines)
+
+
+class AgnosticMeter:
+    """Class-agnostic instance grouping quality.
+
+    Ignores labels entirely and asks one question: did the model carve the scene
+    into the right pieces? Reports
+
+      AP50 / AP25   average precision at IoU 0.5 and 0.25, ranked by score
+      recall        fraction of ground truth objects matched at IoU 0.5
+      splits        predicted segments per matched ground truth object, so a
+                    value above 1 means one object was carved into several
+      merges        ground truth objects per matched prediction, above 1 means
+                    several objects were fused into one
+
+    Splits and merges are the diagnostic that PQ hides: PQ collapses both
+    failures into one number, but they call for opposite fixes.
+    """
+
+    def __init__(self, iou_thresholds: tuple[float, ...] = (0.25, 0.5)):
+        self.iou_thresholds = iou_thresholds
+        self._scores: list[float] = []
+        self._matched: dict[float, list[bool]] = {t: [] for t in iou_thresholds}
+        self.n_gt = 0
+        self._split_num = 0
+        self._split_den = 0
+        self._merge_num = 0
+        self._merge_den = 0
+
+    @staticmethod
+    def _masks(inst: np.ndarray) -> list[np.ndarray]:
+        return [np.flatnonzero(inst == i) for i in np.unique(inst[inst >= 0])]
+
+    def update(self, pred_inst: np.ndarray, gt_inst: np.ndarray,
+               scores: np.ndarray | None = None) -> None:
+        gt = self._masks(gt_inst)
+        pred = self._masks(pred_inst)
+        self.n_gt += len(gt)
+        if not pred:
+            return
+
+        if scores is None or len(scores) != len(pred):
+            scores = np.ones(len(pred), dtype=np.float64)
+
+        n = gt_inst.shape[0]
+        iou = np.zeros((len(pred), len(gt)), dtype=np.float64)
+        occupancy = np.zeros(n, dtype=np.int64)
+        for j, g in enumerate(gt):
+            occupancy[:] = 0
+            occupancy[g] = 1
+            for i, p in enumerate(pred):
+                inter = int(occupancy[p].sum())
+                if inter:
+                    iou[i, j] = inter / (len(p) + len(g) - inter)
+
+        order = np.argsort(-np.asarray(scores))
+        for threshold in self.iou_thresholds:
+            claimed = set()
+            for i in order:
+                j = int(np.argmax(iou[i])) if iou.shape[1] else -1
+                hit = j >= 0 and iou[i, j] > threshold and j not in claimed
+                if hit:
+                    claimed.add(j)
+                self._matched[threshold].append(bool(hit))
+                if threshold == self.iou_thresholds[-1]:
+                    self._scores.append(float(scores[i]))
+
+        # Over- and under-segmentation, counted at IoU 0.25 so that partial
+        # overlaps still register rather than vanishing.
+        overlap = iou > 0.25
+        for j in range(len(gt)):
+            hits = int(overlap[:, j].sum())
+            if hits:
+                self._split_num += hits
+                self._split_den += 1
+        for i in range(len(pred)):
+            hits = int(overlap[i].sum())
+            if hits:
+                self._merge_num += hits
+                self._merge_den += 1
+
+    def _ap(self, threshold: float) -> float:
+        flags = np.asarray(self._matched[threshold], dtype=bool)
+        if flags.size == 0 or self.n_gt == 0:
+            return float("nan")
+        order = np.argsort(-np.asarray(self._scores))
+        flags = flags[order]
+        tp = np.cumsum(flags)
+        fp = np.cumsum(~flags)
+        recall = tp / self.n_gt
+        precision = tp / np.maximum(tp + fp, 1)
+        # interpolate precision to be monotonically decreasing, then integrate
+        precision = np.maximum.accumulate(precision[::-1])[::-1]
+        return float(np.sum(np.diff(np.concatenate(([0.0], recall))) * precision))
+
+    def summary(self) -> dict[str, float]:
+        flags = np.asarray(self._matched.get(0.5, []), dtype=bool)
+        return {
+            "AP25": 100 * self._ap(0.25) if 0.25 in self.iou_thresholds else float("nan"),
+            "AP50": 100 * self._ap(0.5) if 0.5 in self.iou_thresholds else float("nan"),
+            "recall50": 100 * float(flags.sum()) / self.n_gt if self.n_gt else float("nan"),
+            "splits": self._split_num / self._split_den if self._split_den else float("nan"),
+            "merges": self._merge_num / self._merge_den if self._merge_den else float("nan"),
+            "gt_objects": float(self.n_gt),
+            "pred_objects": float(len(self._scores)),
+        }
+
+    def as_markdown(self) -> str:
+        s = self.summary()
+        return "\n".join([
+            "| metric | value | reading |",
+            "|---|---:|---|",
+            f"| AP50 | {s['AP50']:.1f} | grouping quality at IoU 0.5 |",
+            f"| AP25 | {s['AP25']:.1f} | at the looser IoU 0.25 |",
+            f"| recall @ 0.5 | {s['recall50']:.1f} | share of real objects found |",
+            f"| splits | {s['splits']:.2f} | predictions per object; >1 means over-segmented |",
+            f"| merges | {s['merges']:.2f} | objects per prediction; >1 means fused |",
+            f"| objects | {s['gt_objects']:.0f} ground truth, {s['pred_objects']:.0f} predicted | |",
+        ])

@@ -69,10 +69,14 @@ def main() -> None:
         k_ins=cfg.model.k_ins,
         query_aug_std=cfg.model.query_aug_std,
         backbone=cfg.model.backbone,
+        class_agnostic=cfg.model.class_agnostic,
+        aux_semantic=cfg.model.aux_semantic,
     ).to(device)
 
     params = sum(p.numel() for p in model.parameters())
     steps_per_epoch = max(1, len(dataset) // cfg.train.batch_size)
+    print(f"[train] mode={'class-agnostic' if model.class_agnostic else 'class-aware'}"
+          f" aux_semantic={model.aux_semantic}")
     print(f"[train] parameters={params:,} scenes={len(dataset)} "
           f"steps/epoch={steps_per_epoch} target={cfg.train.steps} "
           f"({cfg.train.steps / steps_per_epoch:.1f} epochs)")
@@ -109,7 +113,8 @@ def main() -> None:
 
         with torch.amp.autocast("cuda", enabled=scaler.is_enabled()):
             out = model(batch)
-            stats = compute_losses(batch, out, num_classes=cfg.model.num_classes)
+            stats = compute_losses(batch, out, num_classes=cfg.model.num_classes,
+                                   class_agnostic=cfg.model.class_agnostic)
 
         opt.zero_grad(set_to_none=True)
         scaler.scale(stats["loss"]).backward()
@@ -140,6 +145,8 @@ def main() -> None:
                     "backbone": model.backbone_kind,
                     "in_channels": dataset.in_channels,
                     "use_normals": bool(cfg.data.use_normals),
+                    "class_agnostic": bool(cfg.model.class_agnostic),
+                    "aux_semantic": bool(model.aux_semantic),
                     "config": dict(cfg),
                 },
                 path,

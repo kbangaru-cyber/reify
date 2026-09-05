@@ -1,9 +1,15 @@
-"""Losses for the unified semantic and instance head.
+"""Losses for the instance head, class-aware or class-agnostic.
 
-Ported from the original notebook. The matching is disentangled in the
-OneFormer3D sense: an instance query can only be matched to the ground truth
-instance that owns the superpoint the query was sampled from, so there is no
-Hungarian assignment over the full set.
+The matching is disentangled in the OneFormer3D sense: an instance query can only
+be matched to the ground truth instance that owns the superpoint it was sampled
+from, so there is no Hungarian assignment over the full set.
+
+Class-agnostic mode changes three things:
+
+  * the query head predicts object against no-object rather than a class
+  * the matching cost drops its class term
+  * an instance whose semantic label is unknown becomes a valid target instead of
+    being skipped, which is strictly more supervision than the class-aware path
 """
 
 from __future__ import annotations
@@ -23,8 +29,13 @@ def bce_cost(logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     return F.binary_cross_entropy_with_logits(logits, target, reduction="none").mean(dim=-1)
 
 
-def compute_losses(batch: dict, out: dict, num_classes: int = 20,
-                   lambda_cls: float = 0.5) -> dict:
+def compute_losses(
+    batch: dict,
+    out: dict,
+    num_classes: int = 20,
+    lambda_cls: float = 0.5,
+    class_agnostic: bool = False,
+) -> dict:
     device = batch["sp_inst"].device
     sp_inst, sp_sem, sp_mask = batch["sp_inst"], batch["sp_sem"], batch["sp_mask"]
     b, m_max = sp_inst.shape
@@ -34,14 +45,19 @@ def compute_losses(batch: dict, out: dict, num_classes: int = 20,
     sem_mask_logits = out["sem_mask_logits"]
     src_sp = out["src_sp"]
     k = inst_logits.shape[1]
-    no_object = num_classes
 
-    # semantic: cross entropy per superpoint
-    loss_sem = F.cross_entropy(
-        sem_mask_logits.transpose(1, 2).reshape(-1, num_classes),
-        sp_sem.reshape(-1),
-        ignore_index=-1,
-    )
+    # Class-agnostic: index 0 is object, index 1 is no-object.
+    object_index = 0
+    no_object = 1 if class_agnostic else num_classes
+
+    if sem_mask_logits is not None:
+        loss_sem = F.cross_entropy(
+            sem_mask_logits.transpose(1, 2).reshape(-1, num_classes),
+            sp_sem.reshape(-1),
+            ignore_index=-1,
+        )
+    else:
+        loss_sem = torch.zeros((), device=device)
 
     tgt_cls = torch.full((b, k), no_object, dtype=torch.long, device=device)
     tgt_mask = torch.zeros((b, k, m_max), dtype=torch.float32, device=device)
@@ -66,12 +82,17 @@ def compute_losses(batch: dict, out: dict, num_classes: int = 20,
         for raw_id in gt_ids.tolist():
             gt = (inst_i == raw_id).float().unsqueeze(0)
 
-            sem_in = sem_i_all[inst_i == raw_id]
-            sem_in = sem_in[sem_in >= 0]
-            if sem_in.numel() == 0:
-                continue
-            vals, counts = torch.unique(sem_in, return_counts=True)
-            gt_class = int(vals[torch.argmax(counts)].item())
+            if class_agnostic:
+                # Every annotated instance is a target, including ones whose
+                # class is unknown. Grouping does not need to know the type.
+                target_index = object_index
+            else:
+                sem_in = sem_i_all[inst_i == raw_id]
+                sem_in = sem_in[sem_in >= 0]
+                if sem_in.numel() == 0:
+                    continue  # no class to predict, so no usable target
+                vals, counts = torch.unique(sem_in, return_counts=True)
+                target_index = int(vals[torch.argmax(counts)].item())
 
             cand = torch.where(src_inst == raw_id)[0]
             if cand.numel() == 0:
@@ -79,16 +100,18 @@ def compute_losses(batch: dict, out: dict, num_classes: int = 20,
 
             expanded = gt.expand(cand.numel(), -1)
             cost = (
-                -lambda_cls * cls_prob[i, cand, gt_class]
+                -lambda_cls * cls_prob[i, cand, target_index]
                 + bce_cost(pred_mask[cand], expanded)
                 + dice_cost(pred_mask[cand], expanded)
             )
             best = cand[torch.argmin(cost)]
-            tgt_cls[i, best] = gt_class
+            tgt_cls[i, best] = target_index
             tgt_mask[i, best, :m] = gt.squeeze(0)
             positive[i, best] = True
 
-    loss_cls = F.cross_entropy(inst_logits.reshape(-1, num_classes + 1), tgt_cls.reshape(-1))
+    loss_cls = F.cross_entropy(
+        inst_logits.reshape(-1, inst_logits.shape[-1]), tgt_cls.reshape(-1)
+    )
 
     if positive.any():
         valid_pos = sp_mask.unsqueeze(1).expand(b, k, m_max)[positive]

@@ -54,11 +54,17 @@ class OneFormer3DLike(nn.Module):
         k_ins: int = 256,
         query_aug_std: float = 0.02,
         backbone: str = "auto",
+        class_agnostic: bool = False,
+        aux_semantic: bool = True,
     ):
         super().__init__()
         self.num_classes = num_classes
         self.k_ins = k_ins
         self.query_aug_std = query_aug_std
+        self.class_agnostic = bool(class_agnostic)
+        # The semantic branch is meaningless without classes, so it is only ever
+        # optional in class-agnostic mode.
+        self.aux_semantic = bool(aux_semantic) if self.class_agnostic else True
 
         self.backbone = Backbone(in_ch=in_channels, out_ch=d_model, kind=backbone)
         self.sem_queries = nn.Embedding(num_classes, d_model)
@@ -66,7 +72,9 @@ class OneFormer3DLike(nn.Module):
         self.decoder = nn.ModuleList(
             [DecoderLayer(d_model, nhead) for _ in range(num_decoder_layers)]
         )
-        self.inst_cls = nn.Linear(d_model, num_classes + 1)  # +1 for no-object
+        # Class-aware: 20 classes plus no-object. Class-agnostic: object vs no-object.
+        self.n_cls_out = 2 if self.class_agnostic else num_classes + 1
+        self.inst_cls = nn.Linear(d_model, self.n_cls_out)
         self.inst_kernel = nn.Linear(d_model, d_model)
         self.sem_kernel = nn.Linear(d_model, d_model)
 
@@ -116,19 +124,28 @@ class OneFormer3DLike(nn.Module):
             inst_q = inst_q + torch.randn_like(inst_q) * self.query_aug_std * half
 
         inst_q = inst_q + self.inst_bias(torch.arange(self.k_ins, device=device)).unsqueeze(0)
-        sem_q = self.sem_queries.weight.unsqueeze(0).expand(b, -1, -1)
 
-        q = torch.cat([inst_q, sem_q], dim=1)
+        if self.aux_semantic:
+            sem_q = self.sem_queries.weight.unsqueeze(0).expand(b, -1, -1)
+            q = torch.cat([inst_q, sem_q], dim=1)
+        else:
+            q = inst_q
+
         for layer in self.decoder:
             q = layer(q, sp_feats, kv_key_padding_mask=pad_mask)
 
-        inst_out, sem_out = q[:, : self.k_ins], q[:, self.k_ins :]
-        inst_mask_logits = torch.bmm(self.inst_kernel(inst_out), sp_feats.transpose(1, 2))
-        sem_mask_logits = torch.bmm(self.sem_kernel(sem_out), sp_feats.transpose(1, 2))
+        inst_out = q[:, : self.k_ins]
+        neg = torch.finfo(sp_feats.dtype).min / 2
 
-        neg = torch.finfo(inst_mask_logits.dtype).min / 2
+        inst_mask_logits = torch.bmm(self.inst_kernel(inst_out), sp_feats.transpose(1, 2))
         inst_mask_logits = inst_mask_logits.masked_fill(pad_mask.unsqueeze(1), neg)
-        sem_mask_logits = sem_mask_logits.masked_fill(pad_mask.unsqueeze(1), neg)
+
+        if self.aux_semantic:
+            sem_out = q[:, self.k_ins :]
+            sem_mask_logits = torch.bmm(self.sem_kernel(sem_out), sp_feats.transpose(1, 2))
+            sem_mask_logits = sem_mask_logits.masked_fill(pad_mask.unsqueeze(1), neg)
+        else:
+            sem_mask_logits = None
 
         return {
             "sp_feats": sp_feats,

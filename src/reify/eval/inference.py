@@ -67,3 +67,52 @@ def superpoint_to_point(values: torch.Tensor, point_sp: torch.Tensor) -> torch.T
     safe = point_sp.clamp(0, values.shape[0] - 1)
     out = values[safe]
     return torch.where(point_sp >= 0, out, torch.full_like(out, -1))
+
+
+@torch.no_grad()
+def instances_from_outputs(
+    out: dict,
+    sp_mask: torch.Tensor,
+    mask_threshold: float = 0.5,
+    score_threshold: float = 0.25,
+):
+    """Class-agnostic instance labelling for one scene.
+
+    Returns (instance_ids, scores) where instance_ids is (M,) int64 with -1 for
+    unassigned superpoints, and scores holds one confidence per emitted instance
+    in id order, which class-agnostic average precision needs.
+
+    Unlike the panoptic path there is no stuff, so nothing is excluded by class:
+    walls and floors compete for superpoints on the same footing as furniture.
+    That is the only way this pipeline can ever learn to separate one wall from
+    the next, since the class-aware path discards them as stuff.
+    """
+    valid = sp_mask[0]
+    m = int(valid.sum())
+    inst = torch.full((m,), -1, dtype=torch.long, device=sp_mask.device)
+
+    # index 0 is object, index 1 is no-object
+    objectness = F.softmax(out["inst_logits"][0], dim=-1)[:, 0]
+    mask_prob = torch.sigmoid(out["inst_mask_logits"][0, :, :m])
+
+    binary = mask_prob > mask_threshold
+    counts = binary.sum(dim=1)
+    quality = (mask_prob * binary).sum(dim=1) / counts.clamp_min(1)
+    score = torch.where(counts > 0, objectness * quality, torch.zeros_like(objectness))
+
+    keep = (score >= score_threshold) & (counts > 0)
+    order = torch.argsort(score, descending=True)
+
+    scores: list[float] = []
+    next_id = 0
+    for q in order.tolist():
+        if not keep[q]:
+            continue
+        take = binary[q] & (inst < 0)
+        if int(take.sum()) == 0:
+            continue
+        inst[take] = next_id
+        scores.append(float(score[q]))
+        next_id += 1
+
+    return inst, torch.tensor(scores, device=inst.device)
