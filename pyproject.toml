@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Staged point cloud segmentation for building components"
 requires-python = ">=3.10"
 dependencies = [
+    "plotly",
     "numpy",
     "pandas",
     "plyfile",
