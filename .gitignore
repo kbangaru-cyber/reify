@@ -10,9 +10,9 @@
 *.las
 *.laz
 *.e57
-data/
-datasets/
-cache/
+/data/
+/datasets/
+/cache/
 *_cache/
 
 # notebooks: strip outputs before committing
