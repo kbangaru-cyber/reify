@@ -40,6 +40,18 @@ SEGS_SUFFIX = "_vh_clean_2.0.010000.segs.json"
 AGG_SUFFIX = ".aggregation.json"
 
 
+def _progress(items, desc: str):
+    """Show a bar only when the work is long enough to be worth watching."""
+    if len(items) < 200:
+        return items
+    try:
+        from tqdm import tqdm
+
+        return tqdm(items, desc=f"[data] {desc}", leave=False)
+    except ImportError:
+        return items
+
+
 # --------------------------------------------------------------------------
 # label map
 # --------------------------------------------------------------------------
@@ -202,6 +214,8 @@ class ScanNetDataset(Dataset):
         cache_dir: str | None = None,
         seed: int = 0,
         return_points: bool = False,
+        limit: int = 0,
+        verify: bool = True,
     ):
         self.root = str(root)
         self.scans = os.path.join(self.root, "scans")
@@ -219,20 +233,29 @@ class ScanNetDataset(Dataset):
         if not os.path.exists(list_path):
             raise FileNotFoundError(f"Split list not found: {list_path}")
         listed = [ln.strip() for ln in open(list_path) if ln.strip()]
+        # Truncate before verifying, so a small --limit run does not pay to stat
+        # the whole split.
+        if limit:
+            listed = listed[:limit]
 
-        # Only keep scenes whose four required files are all present. A partial
-        # download should fail here with a count, not at a random training step.
-        self.scene_ids = [s for s in listed if self._complete(s)]
-        missing = len(listed) - len(self.scene_ids)
-        if not self.scene_ids:
-            raise RuntimeError(
-                f"None of the {len(listed)} scenes listed in {list_path} are complete "
-                f"under {self.scans}. Check data.root."
+        if verify:
+            # One scandir per scene rather than one exists() per file. On a
+            # network mount such as a Drive FUSE mount that is three times fewer
+            # round trips, and this loop is otherwise the slowest thing here.
+            self.scene_ids = [s for s in _progress(listed, "verify") if self._complete(s)]
+            missing = len(listed) - len(self.scene_ids)
+            if not self.scene_ids:
+                raise RuntimeError(
+                    f"None of the {len(listed)} scenes listed in {list_path} are complete "
+                    f"under {self.scans}. Check data.root."
+                )
+            print(
+                f"[data] split={split} listed={len(listed)} usable={len(self.scene_ids)}"
+                + (f" skipped={missing} (incomplete on disk)" if missing else "")
             )
-        print(
-            f"[data] split={split} listed={len(listed)} usable={len(self.scene_ids)}"
-            + (f" skipped={missing} (incomplete on disk)" if missing else "")
-        )
+        else:
+            self.scene_ids = listed
+            print(f"[data] split={split} scenes={len(listed)} (not verified)")
 
         self.raw_to_nyu40 = load_raw_to_nyu40(self.meta)
 
@@ -245,9 +268,13 @@ class ScanNetDataset(Dataset):
         return 9 if self.use_normals else 6
 
     def _complete(self, scene_id: str) -> bool:
-        d = Path(self.scans) / scene_id
+        """One directory listing rather than one stat per required file."""
+        try:
+            names = {entry.name for entry in os.scandir(os.path.join(self.scans, scene_id))}
+        except (FileNotFoundError, NotADirectoryError, PermissionError):
+            return False
         return all(
-            (d / (scene_id + suffix)).exists()
+            scene_id + suffix in names
             for suffix in (MESH_SUFFIX, SEGS_SUFFIX, AGG_SUFFIX)
         )
 

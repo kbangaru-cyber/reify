@@ -42,6 +42,8 @@ def main() -> None:
     parser.add_argument("--split", default="train", choices=["train", "val"])
     parser.add_argument("--limit", type=int, default=0, help="stop after N scenes")
     parser.add_argument("--workers", type=int, default=None)
+    parser.add_argument("--no-verify", action="store_true",
+                        help="skip the on-disk completeness check (slow on network mounts)")
     parser.add_argument("--eval-mode", action="store_true",
                         help="build the evaluation cache: caps disabled, point arrays kept")
     args = parser.parse_args()
@@ -59,9 +61,9 @@ def main() -> None:
         cache_dir=cfg.data.cache_dir,
         seed=cfg.data.seed,
         return_points=args.eval_mode,
+        limit=args.limit,
+        verify=not args.no_verify,
     )
-    if args.limit:
-        dataset.scene_ids = dataset.scene_ids[: args.limit]
 
     cache = Path(cfg.data.cache_dir)
     already = len(list(cache.glob("*.npz"))) if cache.is_dir() else 0
